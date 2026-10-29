@@ -1,0 +1,72 @@
+name: CI
+
+# Для репозитория артефактов «сборка» — это проверка целостности и открываемости.
+# Без неё подмена или обрезка файла остаётся незамеченной до момента защиты.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integrity:
+    name: Checksums and GitHub limits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify MANIFEST.sha256
+        run: ./scripts/verify.sh
+      - name: File sizes stay within GitHub limits
+        run: |
+          oversized=0
+          for f in *.pptx *.pdf *.docx *.mp4 *.html; do
+            size=$(stat -c%s "$f")
+            echo "$f: $((size / 1024 / 1024)) MB"
+            if [ "$size" -ge 104857600 ]; then
+              echo "::error file=$f::файл превышает лимит GitHub в 100 МБ"
+              oversized=1
+            fi
+          done
+          exit "$oversized"
+
+  formats:
+    name: Every artefact opens
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install parsers
+        run: pip install python-pptx python-docx
+      - name: Check that each file is readable, not just named correctly
+        run: python tools/check_formats.py
+
+  docs:
+    name: Documentation, slide index and links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install parsers
+        run: pip install python-pptx python-docx
+      - name: Check the index matches the deck
+        run: ./scripts/docs-check.sh
+      - name: The generated index is reproducible
+        run: |
+          python tools/pptx_outline.py "Концепция_счастья.pptx" > /tmp/slides.md
+          if ! diff -q /tmp/slides.md docs/content/slides.md >/dev/null; then
+            echo "::error::docs/content/slides.md устарел — выполните make outline"
+            diff /tmp/slides.md docs/content/slides.md | head -40
+            exit 1
+          fi
+          echo "индекс слайдов воспроизводится из презентации"
